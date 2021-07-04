@@ -1,0 +1,16 @@
+#### Remove the requirements.txt since we will use a forked version of the ops framework
+# -r requirements.txt
+#### Remove below once the forked version is not needed anymore
+git+https://github.com/phvalguima/operator@263-add-storage-unittest#egg=ops
+netifaces
+# There is an error with importlib from 0.7.20+
+netaddr>0.7.16,<0.7.19
+python-hosts==1.0.1
+git+https://github.com/phvalguima/charms.wand#egg=wand
+git+https://github.com/juju/charm-helpers.git@87fc7ee5#egg=charmhelpers
+git+https://github.com/canonical/ops-lib-nrpe#egg=ops-lib-nrpe
+#########
+coverage
+flake8
+mock
+stestr>=2.2.0

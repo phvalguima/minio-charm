@@ -1,0 +1,7 @@
+# Source: https://github.com/minio/minio-service/tree/master/linux-systemd/distributed
+# Remote volumes to be used for MinIO server.
+{% for key, value in env.items() -%}
+{% if value -%}
+{{key}}={{value}}
+{% endif %}
+{%- endfor %}

@@ -1,0 +1,38 @@
+# Copyright 2021 pguimaraes
+# See LICENSE file for licensing details.
+name: minio
+maintainer: Pedro Guimaraes <pedro.guimaraes@canonical.com>
+description: |
+  MinIO's high-performance object storage suite is software defined and
+  enables customers to build cloud-native data infrastructure for
+  machine learning, analytics and application data workloads.
+
+summary: High Performance Object Storage
+tags: [file-servers, storage]
+series:
+- focal
+peers:
+  cluster:
+    interface: minio-peer
+requires:
+  certificates:
+    interface: tls-certificates
+provides:
+  object-storage:
+    interface: object-storage
+    schema: https://gist.githubusercontent.com/knkski/386af79a681326fb1c2a8cb69e5b02d2/raw/1e089582c43df711e8c08a4af2199f4a2edc43d4/object-storage.yaml
+    versions: [v1]
+  prometheus-manual:
+    interface: prometheus-manual
+  nrpe-external-master:
+    interface: nrpe-external-master
+storage:
+  data:
+    type: block
+    multiple:
+      range: 0-
+    minimum-size: 1G
+    description: |
+      Block devices to be added to the minio as data devices.
+      If no block is defined, minio charm will not work correctly.
+      LIMIT: a given unit can only hold up to 32 disks

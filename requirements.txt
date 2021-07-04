@@ -1,0 +1,14 @@
+ops
+netifaces
+# There is an error with importlib from 0.7.20+
+netaddr>0.7.16,<0.7.19
+python-hosts==1.0.1
+git+https://github.com/phvalguima/charms.wand#egg=wand
+git+https://github.com/juju/charm-helpers.git@87fc7ee5#egg=charmhelpers
+git+https://github.com/canonical/ops-lib-nrpe#egg=ops-lib-nrpe
+# Use pystemd to inspect if a given service is marked as inactive or faild
+# charmhelpers is not able to give this detailed information since it uses
+# the return value of "sudo systemctl status" to probe if a service is
+# running or not.
+# That will always be 0 if OK or 3 if not.
+#git+https://github.com/phvalguima/pystemd#egg=pystemd

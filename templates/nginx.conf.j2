@@ -1,0 +1,33 @@
+# More info:
+# https://www.nginx.com/blog/enterprise-grade-cloud-storage-nginx-plus-minio/
+# https://docs.min.io/docs/setup-nginx-proxy-with-minio
+
+upstream minio_servers {
+    {% for value in minio_servers -%}
+    {% if value -%}
+    {{value}}
+    {% endif %}
+    {%- endfor %}
+#    server minio-server-1:9000;
+#    server minio-server-2:9000;
+}
+
+ # Proxy any other request to the application server running on port 9001
+server {
+ listen {{ service_port }};
+ server_name {{ service_url }}
+
+ location / {
+   proxy_set_header X-Real-IP $remote_addr;
+   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+   proxy_set_header X-Forwarded-Proto $scheme;
+   proxy_set_header Host $http_host;
+
+   proxy_connect_timeout {{ proxy_connect_timeout }};
+   proxy_http_version 1.1;
+   proxy_set_header Connection "";
+   chunked_transfer_encoding off;
+
+   proxy_pass http://minio_server;
+ }
+}

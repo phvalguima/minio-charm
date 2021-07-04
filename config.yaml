@@ -1,0 +1,100 @@
+# Copyright 2021 pguimaraes
+# See LICENSE file for licensing details.
+
+options:
+  user:
+    type: string
+    default: 'minio'
+    description: |
+      Create an user for minio and equivalent home folder
+      for the certificates.
+  group:
+    type: string
+    default: 'minio'
+    description: |
+      Creates a group for the minio user
+  min-units:
+    type: int
+    default: 3
+    description: |
+      Minimum amount of nodes to allow bootstrapping
+  min-disks:
+    type: int
+    default: 4
+    description: |
+      Minimum amount of disks available to allow bootstrapping for the cluster.
+  package:
+    default: 'https://dl.min.io/server/minio/release/linux-amd64/minio_20210617001046.0.0_amd64.deb'
+    type: string
+    description: |
+      Link to the minio package for Ubuntu.
+  proxy-connect-timeout:
+    default: 300
+    type: int
+    description: |
+      Timeout for the proxy, in seconds
+  minio-service-port:
+    default: 9000
+    type: int
+    description: |
+      Port used by minio service.
+  service-port:
+    default: 80
+    type: int
+    description: |
+      Service port used by the service-url.
+  service-url:
+    default: ''
+    type: string
+    description: |
+      URL used for the service. Must resolve to the service-vip.
+  service-vip:
+    default: ''
+    type: string
+  automatic-upgrade:
+    default: False
+    type: boolean
+    description: |
+      Should the charm upgrade as soon as a change on the "package" config upgraded or not.
+      If true, the charm will automatically upgrade to what the new value of "package" is.
+  minio_root_user:
+    default: 'minioadmin'
+    type: string
+    description: |
+      Root user for minio
+  ssl_cert:
+    default: ''
+    type: string
+    description: |
+      Certificate with CA certificate chain to be used in base64
+      -----BEGIN CERTIFICATE-----
+      <Primary cert in PEM format for your-domain>
+      -----END CERTIFICATE-----
+      -----BEGIN CERTIFICATE-----
+      <First intermediate CA certificate>
+      -----END CERTIFICATE-----
+      . . . . .
+      (there may be more than one intermediate cert)
+      . . . . .
+      -----BEGIN CERTIFICATE-----
+      <root-ca>
+      -----END CERTIFICATE-----
+      Pass the file with the certificate chain above as:
+      $ juju config <your-charm> ssl_cert="$(cat <crt file> | base64 -w0)"
+      Or in the bundle, using: include-base64://<path to crt file>
+  ssl_key:
+    default: ''
+    type: string
+    description: |
+      Key to be used in base64
+  prometheus_metrics_path:
+    default: '/minio/v2/metrics/'
+    type: string
+    description: |
+      URL path where prometheus metrics are served.
+      "cluster" or "node" will be appended at the end of this path
+  prometheus_port:
+    default: 9000
+    type: int
+    description: |
+      Prometheus port to be used for the scrape
