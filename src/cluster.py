@@ -83,12 +83,12 @@ class MinioClusterManager(RelationManagerBase):
     def is_ready(self):
         if len(self.relation.units) < self._min_units:
             return False
-        num_disks = 0
+        num_disks = len(self._charm.model.storages[self._storage_name])
         for u in self.relation.units:
             num_disks += int(self.relation.data[u]["num_disks"])
         if num_disks < self._min_disks:
             return False
-        if len(num_disks) % 4 > 0:
+        if num_disks % 4 > 0:
             raise MinioClusterNumDisksMustBeDivisibleBy4(num_disks)
         return True
 

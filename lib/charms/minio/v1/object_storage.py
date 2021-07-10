@@ -1,7 +1,7 @@
 from ops.framework import Object, StoredState
 from wand.apps.relations.relation_manager_base import RelationManagerBase
 
-from charmhelpers.contrib.network import ip
+from charmhelpers.contrib.network.ip import get_hostname
 
 
 class ObjectStorageRelationManager(RelationManagerBase):
@@ -26,7 +26,7 @@ class ObjectStorageRelationProvider(ObjectStorageRelationManager):
     def hostname(self):
         if self.state.hostname:
             return self.state.hostname
-        return ip.get_hostname(self.advertise_addr)
+        return get_hostname(self.advertise_addr)
     
     @hostname.setter
     def hostname(self, h):

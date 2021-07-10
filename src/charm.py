@@ -246,6 +246,7 @@ class MinioCharm(CharmBase):
             self, self._stored.disks, "data",
             self.config["user"], self.config["group"])
         self._stored.set_default(minio_root_pwd=genRandomPassword())
+        self.prometheus = None
 
     def _on_restart_event(self, event):
         if event.restart():
@@ -283,8 +284,9 @@ class MinioCharm(CharmBase):
                 if len(self.get_ssl_cacert()) > 0 else None)
         # Every node should submit a "node" entry for prometheus
         endpoint = self.minio.hostname or None
-        p = PrometheusMonitorNode(self.charm, 'prometheus-manual')
-        p.request(
+        self.prometheus = \
+            PrometheusMonitorNode(self.charm, 'prometheus-manual')
+        self.prometheus.request(
             self.config["prometheus_port"],
             metrics_path=self.config["prometheus_metrics_path"],
             endpoint=endpoint,
@@ -303,12 +305,12 @@ class MinioCharm(CharmBase):
         return
 
     def _on_certificates_relation_joined(self, event):
-        if not self._cert_relation_set(event):
+        if not self._cert_relation_set(event, self.minio):
             return
         self._on_config_changed(event)
 
     def _on_certificates_relation_changed(self, event):
-        if not self._cert_relation_set(event):
+        if not self._cert_relation_set(event, self.minio):
             return
         self._on_config_changed(event)
 
@@ -405,17 +407,6 @@ class MinioCharm(CharmBase):
         except subprocess.CalledProcessError as e:
             logger.error("Installation of minio package failed with {}".format(str(e)))
         self._stored.package = self.config.get("package", "")
-        """
-        # Now, install or upgrade nginx
-        cmd = ["apt", "install", '--assume-yes']
-        if get_installed_version("nginx"):
-            cmd.append("--only-upgrade")
-        cmd.append("nginx")
-        try:
-            subprocess.check_output(cmd)
-        except subprocess.CalledProcessError as e:
-            logger.error("Installation of nginx package failed with {}".format(str(e)))
-        """
 
     def _check_if_ready_to_start(self, ctx):
         # ctx can be a string or dict, then check and convert accordingly
@@ -426,19 +417,24 @@ class MinioCharm(CharmBase):
             return False
         return True
 
+    def service_running(self):
+        for s in self.services:
+            if not service_running(s):
+                return False
+        return True
+
     def _on_config_changed(self, event):
         """CONFIG CHANGE
         1) Treat the case we are dealing with an upgrade
         2) Check if we can do a config change or are we waiting for sth:
+        2.1) Check certificates
         2.2) Ensure cluster relation has the correct URL and volumes
-        2.1) Check if cluster relation is ready if min-units > 1
-        2.1.1) If min-units > 1: check if password available on cluster
-        2.3) Check certificates
+        2.3) Check if cluster relation is ready if min-units > 1
+        2.3.1) If min-units > 1: check if password available on cluster
         3) Initiate context
         4) Generate the environment file for Minio
         5) Restart strategy
         """
-
         # 1) Treat the case where we are in the middle of an upgrade
         if self._stored.package != self.config["package"]:
             # Operator specified a new package, upgrade time
@@ -452,7 +448,23 @@ class MinioCharm(CharmBase):
                     "package config changed: waiting for upgrade action...")
                 return
         # 2) Check if we can do a config change or waiting for sth
-        # 2.1) Check cluster relation readiness
+        # 2.1) Check certificates
+        if self.certificates.relation or \
+           (len(self.config.get("ssl_cert", "")) > 0 and \
+           len(self.config.get("ssl_key", "")) > 0):
+            # We have a certificate (either via relations or configs)
+            # In this case, we need to ensure everything is set before
+            # moving on with the config change.
+            # Only minio relation matters for certificate setup
+            if not self._cert_relation_set(event, self.minio):
+                return
+        # 2.2) Ensure cluster relation has the correct URL for this unit
+        if self.cluster.relations:
+            self.cluster.url = "{}://{}:{}".format(
+                "https" if len(self.get_ssl_cert()) > 0 else "http",
+                self.minio.hostname, self.config["minio-service-port"])
+            self.cluster.used_folders = self.disks.used_folders()
+        # 2.3) Check cluster relation readiness
         try:
             if self.config["min-units"] > 1:
                 if not self.cluster.is_ready():
@@ -465,18 +477,9 @@ class MinioCharm(CharmBase):
             # Operator must do a change, which will retrigger this logic
             # No need to defer this event
             return
-        # 2.1.1) If min-units > 1: check if password available on cluster
+        # 2.3.1) If min-units > 1: check if password available on cluster
         if not self.unit.is_leader():
             self._stored.minio_root_pwd = self.cluster.get_root_pwd()
-        if self.cluster.relations:
-            # 2.2) Ensure cluster relation has the correct URL for this unit
-            self.cluster.url = "{}://{}:{}".format(
-                "https" if len(self.get_ssl_cert()) > 0 else "http",
-                self.minio.hostname(), self.config["minio-service-port"])
-            self.cluster.used_folders = self.disks.used_folders()
-        # 2.3) Check certificates
-        if not self._cert_relation_set(event):
-            return
         ctx = {}
         ctx["env_minio"] = self.generate_env_file_minio()
         ctx["minio_svc"] = self.generate_service_file_minio()
@@ -514,7 +517,7 @@ class MinioCharm(CharmBase):
             self.model.unit.status = \
                 BlockedStatus("Waiting for restart event")
             return
-        elif service_running(self.service):
+        elif self.service_running():
             self.model.unit.status = \
                 ActiveStatus("Service is running")
         else:
@@ -547,7 +550,6 @@ class MinioCharm(CharmBase):
         svc = {}
         svc["user"] = self.config["user"]
         svc["group"] = self.config["group"]
-
         render(source="minio.service.j2",
                target=SVC_FILE,
                owner="root",
@@ -571,8 +573,10 @@ class MinioCharm(CharmBase):
         if self.cluster.relation:
             # We have a cluster, then pick info for each unit
             for k, v in self.cluster.endpoints().items():
-                env["MINIO_VOLUMES"].append(
-                    "{}/{}".format(k, x) for x in v)
+                # Assuming all paths come with /<path>
+                # We do not need a / between URL and path
+                env["MINIO_VOLUMES"].extend(
+                    ["{}{}".format(k, x) for x in v])
         else:
             # We do not have a cluster, just pick the used folders
             for x in self.disks.used_folders():
@@ -582,7 +586,9 @@ class MinioCharm(CharmBase):
             self.config["minio-service-port"])
         env["MINIO_ROOT_USER"] = self.config["minio_root_user"]
         env["MINIO_ROOT_PASSWORD"] = self._stored.minio_root_pwd
-        if self.prometheus.relations:
+        # If prometheus relation does not exist, so self.prometheus
+        # will still have None value from __init__
+        if self.prometheus:
             env["MINIO_PROMETHEUS_AUTH_TYPE"] = "public"
         render(source="minio_env",
                target=CONFIG_ENV_FILE,
@@ -598,9 +604,19 @@ class MinioCharm(CharmBase):
         return "".join(_break_crt_chain(self.get_ssl_cert())[1:])
 
     def get_ssl_cert(self):
+        if not self.certificates.relation and \
+           len(self.config.get("ssl_cert", "")) == 0 and \
+           len(self.config.get("ssl_key", "")) == 0:
+            # Certificates will not be used
+            return ""
         return self._get_ssl(self.minio, "cert")
 
     def get_ssl_key(self):
+        if not self.certificates.relation and \
+           len(self.config.get("ssl_cert", "")) == 0 and \
+           len(self.config.get("ssl_key", "")) == 0:
+            # Certificates will not be used
+            return ""
         return self._get_ssl(self.minio, "key")
 
     def _get_ssl(self, relation, ty):
@@ -637,13 +653,18 @@ class MinioCharm(CharmBase):
         # or install events. In these cases, the goal is to run
         # the validation at the end of this method
         if rel:
-            if self.certificates.relation and rel.relation:
+            if self.certificates.relation:
                 sans = [
-                    rel.binding_addr,
-                    rel.advertise_addr,
-                    rel.hostname,
                     socket.gethostname()
                 ]
+                # We do not need to know if any relations exists but rather
+                # if binding/advertise addresses exists.
+                if rel.binding_addr:
+                    sans.append(rel.binding_addr)
+                if rel.advertise_addr:
+                    sans.append(rel.advertise_addr)
+                if rel.hostname:
+                    sans.append(rel.hostname)
                 # Add the service-* info
                 if len(self.config["service-url"]) > 0:
                     sans.append(self.config["service-url"])
