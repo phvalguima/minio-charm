@@ -18,6 +18,9 @@ import socket
 import json
 import os
 import base64
+import sys
+import yaml
+sys.path.append('lib')
 
 from ops.charm import CharmBase, InstallEvent
 from ops.framework import StoredState
@@ -59,6 +62,10 @@ from charmhelpers.core.host import (
     service_running,
     service_restart
 )
+from charmhelpers.core.hookenv import (
+    open_port,
+    close_port
+)
 
 from charmhelpers.core.templating import render
 
@@ -66,7 +73,7 @@ from cluster import (
     MinioClusterManager,
     MinioClusterNumDisksMustBeDivisibleBy4
 )
-from lib.charms.minio.v1.object_storage import ObjectStorageRelationProvider
+from charms.minio.v1.object_storage import ObjectStorageRelationProvider
 
 from nrpe.client import NRPEClient
 from monitoring import PrometheusMonitorCluster, PrometheusMonitorNode
@@ -177,7 +184,7 @@ logger = logging.getLogger(__name__)
 # https://docs.min.io/docs/how-to-secure-access-to-minio-server-with-tls.html
 TLS_PATH = "/home/{}/.minio/certs/"
 CA_CERT_PATH = "/home/{}/.minio/certs/CAs/"
-CONFIG_ENV_FILE = "/etc/minio"
+CONFIG_ENV = "/etc/minio/"
 SVC_FILE = "/etc/systemd/system/minio.service"
 
 
@@ -223,7 +230,7 @@ class MinioCharm(CharmBase):
             self._on_prometheus_relation_changed)
 
         self.framework.observe(self.on.restart_event,
-                                self._on_restart_event)
+                               self._on_restart_event)
 
         self.nrpe = NRPEClient(self, 'nrpe-external-master')
         self.framework.observe(self.nrpe.on.nrpe_available, self.on_nrpe_available)
@@ -236,7 +243,10 @@ class MinioCharm(CharmBase):
             TLSCertificateRequiresRelation(self, 'certificates')
         self._stored.set_default(package="")
         self._stored.set_default(ctx="{}")
+        self._stored.set_default(need_restart=False)
         self.services = ["minio"]
+        self._stored.set_default(minio_root_pwd=genRandomPassword())
+        self.prometheus = None
         # DiskMapHelper expects a map of folder names and equivalent
         # mounting options to be used for the disks mounted via juju
         # storage. Given we need some previsiblity on the naming of those
@@ -245,14 +255,30 @@ class MinioCharm(CharmBase):
         self.disks = DiskMapHelper(
             self, self._stored.disks, "data",
             self.config["user"], self.config["group"])
-        self._stored.set_default(minio_root_pwd=genRandomPassword())
-        self.prometheus = None
+        self._stored.set_default(port=-1)
 
     def _on_restart_event(self, event):
+        if not self._stored.need_restart:
+            # There is a chance of several restart events being stacked.
+            # This check ensures a single restart happens if several
+            # restart events have been requested.
+            # In this case, a restart already happened and no other restart
+            # has been emitted, therefore, avoid restarting.
+
+            # That is possible because event.restart() acquires the lock,
+            # (either at that hook or on a future hook) and then, returns
+            # True + release the lock at the end.
+            # Only then, we set need_restart to False (no pending lock
+            # requests for this unit anymore).
+            # We can drop any other restart events that were stacked and
+            # waiting for processing.
+            return
         if event.restart():
             # Restart was successful, if the charm is keeping track
             # of a context, that is the place it should be updated
             self._stored.ctx = event.ctx
+            # Toggle need_restart as we just did it.
+            self._stored.need_restart = False
         else:
             # defer the RestartEvent as it is still waiting for the
             # lock to be released.
@@ -305,13 +331,13 @@ class MinioCharm(CharmBase):
         return
 
     def _on_certificates_relation_joined(self, event):
-        if not self._cert_relation_set(event, self.minio):
-            return
+#        if not self._cert_relation_set(event, self.minio):
+#            return
         self._on_config_changed(event)
 
     def _on_certificates_relation_changed(self, event):
-        if not self._cert_relation_set(event, self.minio):
-            return
+#        if not self._cert_relation_set(event, self.minio):
+#            return
         self._on_config_changed(event)
 
     def on_update_status(self, event):
@@ -327,7 +353,7 @@ class MinioCharm(CharmBase):
         svc_list = [s for s in self.services if not service_running(s)]
         if len(svc_list) == 0:
             self.model.unit.status = \
-                ActiveStatus("{} is running".format(self.services))
+                ActiveStatus("{} running".format(self.services))
             # The status is not in Maintenance and we can see the service
             # is up, therefore we can switch to Active.
             return
@@ -338,8 +364,15 @@ class MinioCharm(CharmBase):
                 "status, with message {}, return".format(
                     self.model.unit.status.message))
             return
+        # There are some services that are offline. Request restart
+        # for this sublist:
+        logger.warn(
+            "Found services {} not running, requesting restart".format(
+                svc_list))
+        self.on.restart_event.emit(self._stored.ctx, services=svc_list)
+        self._stored.need_restart = True
         self.model.unit.status = \
-            BlockedStatus("Services not running that"
+            BlockedStatus("(Wait Restart) Services not running that"
                           " should be: {}".format(",".join(svc_list)))
 
     @property
@@ -359,21 +392,13 @@ class MinioCharm(CharmBase):
         self._on_cluster_relation_changed(event)
 
     def _on_cluster_relation_changed(self, event):
-        if not self._cert_relation_set(event):
-            return
+#        if not self._cert_relation_set(event):
+#            return
         self.cluster.relation_changed(event)
         self._on_config_changed(event)
 
     def _on_install(self, event):
-        folders = [
-            "/etc/minio"
-            "/home/{}".format(self.config["user"]),
-            "/home/{}/.minio/".format(self.config["user"]),
-            "/home/{}/.minio/certs".format(self.config["user"]),
-            TLS_PATH.format(self.config["user"]),
-            "/var/log/minio",
-            CA_CERT_PATH.format(self.config["user"])]
-        os.makedirs(folders, exist_ok=True)
+        # Create user and group if they do not exist already
         try:
             groupAdd(self.config["group"], system=True)
         except LinuxGroupAlreadyExistsError:
@@ -382,6 +407,16 @@ class MinioCharm(CharmBase):
             userAdd(self.config["user"], group=self.config["group"])
         except LinuxUserAlreadyExistsError:
             pass
+        folders = [
+            CONFIG_ENV,
+            "/home/{}".format(self.config["user"]),
+            "/home/{}/.minio/".format(self.config["user"]),
+            "/home/{}/.minio/certs".format(self.config["user"]),
+            TLS_PATH.format(self.config["user"]),
+            "/var/log/minio",
+            CA_CERT_PATH.format(self.config["user"])]
+        for f in folders:
+            os.makedirs(f, exist_ok=True)
         set_folders_and_permissions(
             folders, self.config["user"], self.config["group"])
         # This is the very first hook, we do not need to wait,
@@ -397,18 +432,20 @@ class MinioCharm(CharmBase):
         apt_update()
         # minio install/upgrade
         try:
-            subprocess.check_output([
-                "wget", self.config.get("package", ""),
-                "-O", "/tmp/minio.deb"
-            ])
-            subprocess.check_output([
-                "dpkg", "-i", "/tmp/minio.deb"
-            ])
+            for p in [self.config.get("package", ""),
+                      self.config.get("mcli-package", "")]:
+                subprocess.check_output([
+                    "wget", p,
+                    "-O", "/tmp/minio.deb"
+                ])
+                subprocess.check_output([
+                    "dpkg", "-i", "/tmp/minio.deb"
+                ])
         except subprocess.CalledProcessError as e:
-            logger.error("Installation of minio package failed with {}".format(str(e)))
+            logger.error("Installation of minio packages failed with {}".format(str(e)))
         self._stored.package = self.config.get("package", "")
 
-    def _check_if_ready_to_start(self, ctx):
+    def _check_if_need_restart(self, ctx):
         # ctx can be a string or dict, then check and convert accordingly
         c = json.dumps(ctx) if isinstance(ctx, dict) else ctx
         if c == self._stored.ctx:
@@ -426,6 +463,7 @@ class MinioCharm(CharmBase):
     def _on_config_changed(self, event):
         """CONFIG CHANGE
         1) Treat the case we are dealing with an upgrade
+        1.1) Address user/group setup and disks
         2) Check if we can do a config change or are we waiting for sth:
         2.1) Check certificates
         2.2) Ensure cluster relation has the correct URL and volumes
@@ -434,7 +472,9 @@ class MinioCharm(CharmBase):
         3) Initiate context
         4) Generate the environment file for Minio
         5) Restart strategy
+        6) Open ports
         """
+        use_certificates = False
         # 1) Treat the case where we are in the middle of an upgrade
         if self._stored.package != self.config["package"]:
             # Operator specified a new package, upgrade time
@@ -447,11 +487,24 @@ class MinioCharm(CharmBase):
                 self.model.unit.status = BlockedStatus(
                     "package config changed: waiting for upgrade action...")
                 return
+        # 1.1) Address user/group setup and disks
+        # Create user and group if they do not exist already
+        try:
+            groupAdd(self.config["group"], system=True)
+        except LinuxGroupAlreadyExistsError:
+            pass
+        try:
+            userAdd(self.config["user"], group=self.config["group"])
+        except LinuxUserAlreadyExistsError:
+            pass
+        self.disks.attach_disks()
         # 2) Check if we can do a config change or waiting for sth
         # 2.1) Check certificates
         if self.certificates.relation or \
-           (len(self.config.get("ssl_cert", "")) > 0 and \
-           len(self.config.get("ssl_key", "")) > 0):
+           (len(self.config.get("ssl_cert", "")) > 0 and
+            len(self.config.get("ssl_key", "")) > 0): # noqa
+            # We need to generate_certificates later
+            use_certificates = True
             # We have a certificate (either via relations or configs)
             # In this case, we need to ensure everything is set before
             # moving on with the config change.
@@ -483,13 +536,14 @@ class MinioCharm(CharmBase):
         ctx = {}
         ctx["env_minio"] = self.generate_env_file_minio()
         ctx["minio_svc"] = self.generate_service_file_minio()
-        ctx["cert_data"] = self.generate_certificates()
+        if use_certificates:
+            ctx["cert_data"] = self.generate_certificates()
 
         if self.unit.is_leader():
             # Now, we need to always handle the locks, even if acquire() was not
-            # called since _check_if_ready_to_start returned False.
+            # called since _check_if_need_restart returned False.
             # Therefore, we need to manually handle those locks.
-            # If _check_if_ready_to_start returns True, then the locks will be
+            # If _check_if_need_restart returns True, then the locks will be
             # managed at the restart event and config-changed is closed with a
             # return.
             coordinator = OpsCoordinator()
@@ -512,8 +566,9 @@ class MinioCharm(CharmBase):
             MaintenanceStatus("Building context...")
         logger.debug("Context: {}, saved state is: {}".format(
             ctx, self._stored.ctx))
-        if self._check_if_ready_to_start(ctx):
+        if self._check_if_need_restart(ctx):
             self.on.restart_event.emit(ctx, services=self.services)
+            self._stored.need_restart = True
             self.model.unit.status = \
                 BlockedStatus("Waiting for restart event")
             return
@@ -524,6 +579,13 @@ class MinioCharm(CharmBase):
             self.model.unit.status = \
                 BlockedStatus("Service not running that "
                               "should be: {}".format(self.services))
+
+        # 6) Open ports
+        if self._stored.port != self.config.get("minio-service-port", 9000):
+            if self._stored.port > 0:
+                close_port(self._stored.port)
+            open_port(self.config.get("minio-service-port", 9000))
+            self._stored.port = self.config.get("minio-service-port", 9000)
 
     def generate_certificates(self):
         """Generate the certificates: CA, cert and key files obtained
@@ -536,10 +598,10 @@ class MinioCharm(CharmBase):
         ctx["key"] = self.get_ssl_key()
         saveCrtChainToFile(
             self.get_ssl_cert(),
-            cert_path=TLS_PATH.format(user) + "cert.crt",
-            ca_chain_path=CA_CERT_PATH.format(user) + "ca.crt",
-            user=user, group=group)
-        with open(TLS_PATH.format(user), "w") as f:
+            cert_path=TLS_PATH.format(user) + "public.crt",
+            ca_chain_path=CA_CERT_PATH.format(user) + "public.crt",
+            user=user, group=group, force=True)
+        with open(TLS_PATH.format(user) + "private.key", "w") as f:
             f.write(self.get_ssl_key())
             f.close()
         return ctx
@@ -569,29 +631,33 @@ class MinioCharm(CharmBase):
         4) Set Prometheus credentials if relation is stablished
         """
         env = {}
-        env["MINIO_VOLUMES"] = []
+        env = \
+            yaml.safe_load(
+                self.config.get("minio_env_extra_opts", "")) or {}
+
+        vol = []
         if self.cluster.relation:
             # We have a cluster, then pick info for each unit
             for k, v in self.cluster.endpoints().items():
                 # Assuming all paths come with /<path>
                 # We do not need a / between URL and path
-                env["MINIO_VOLUMES"].extend(
+                vol.extend(
                     ["{}{}".format(k, x) for x in v])
-        else:
-            # We do not have a cluster, just pick the used folders
-            for x in self.disks.used_folders():
-                env["MINIO_VOLUMES"].append(
-                    "{}".format(x))
-        env["MINIO_OPTS"] = "--address :{}".format(
+        # Add this unit's folders
+        for x in self.disks.used_folders():
+            vol.append(
+                "{}{}".format(self.cluster.url, x))
+        env["MINIO_VOLUMES"] = "\"{}\"".format(" ".join(vol))
+        env["MINIO_OPTS"] = "\"--address :{}\"".format(
             self.config["minio-service-port"])
         env["MINIO_ROOT_USER"] = self.config["minio_root_user"]
-        env["MINIO_ROOT_PASSWORD"] = self._stored.minio_root_pwd
+        env["MINIO_ROOT_PASSWORD"] = self.cluster.get_root_pwd()
         # If prometheus relation does not exist, so self.prometheus
         # will still have None value from __init__
         if self.prometheus:
             env["MINIO_PROMETHEUS_AUTH_TYPE"] = "public"
         render(source="minio_env",
-               target=CONFIG_ENV_FILE,
+               target=CONFIG_ENV + "minio",
                owner=self.config['user'],
                group=self.config["group"],
                perms=0o600,
@@ -635,7 +701,7 @@ class MinioCharm(CharmBase):
                     self.config[prefix + "_key"]).decode("ascii")
         try:
             certs = self.certificates.get_server_certs()
-        except TLSCertificateRelationNotPresentError as e:
+        except TLSCertificateRelationNotPresentError:
             # No relation for certificates present and no configs set
             # Return None for this request
             return ""
@@ -648,6 +714,10 @@ class MinioCharm(CharmBase):
         return c
 
     def _cert_relation_set(self, event, rel=None):
+        # Will introduce this CN format later
+        def __get_cn():
+            return "*." + ".".join(socket.getfqdn().split(".")[1:])
+
         # generate cert request if tls-certificates available
         # rel may be set to None in cases such as config-changed
         # or install events. In these cases, the goal is to run
@@ -655,7 +725,8 @@ class MinioCharm(CharmBase):
         if rel:
             if self.certificates.relation:
                 sans = [
-                    socket.gethostname()
+                    socket.gethostname(),
+                    socket.getfqdn()
                 ]
                 # We do not need to know if any relations exists but rather
                 # if binding/advertise addresses exists.
@@ -670,6 +741,12 @@ class MinioCharm(CharmBase):
                     sans.append(self.config["service-url"])
                 if len(self.config["service-vip"]) > 0:
                     sans.append(self.config["service-vip"])
+
+                # Update the sans list on the cluster
+                self.cluster.set_sans(sans)
+                # Recover available information
+                sans.extend(self.cluster.get_sans())
+
                 # Common name is always CN as this is the element
                 # that organizes the cert order from tls-certificates
                 self.certificates.request_server_cert(

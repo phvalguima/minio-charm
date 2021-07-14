@@ -16,7 +16,7 @@ from ops.model import BlockedStatus
 
 import wand.contrib.disk_map as disk_map
 
-import lib.charms.minio.v1.object_storage as obj_stor
+import charms.minio.v1.object_storage as obj_stor
 
 TO_PATCH_LINUX = [
     "userAdd",
@@ -68,11 +68,12 @@ class TestCharm(unittest.TestCase):
         for p in TO_PATCH_LINUX:
             self._patch(charm, p)
         for p in TO_PATCH_FETCH:
-#            patch("charm." + p)
             self._patch(charm, p)
         for p in TO_PATCH_HOST:
             self._patch(charm, p)
 
+    @patch.object(charm, "open_port")
+    @patch.object(charm, "close_port")
     @patch("charm.apt_update")
     @patch.object(obj_stor.ObjectStorageRelationProvider,
                   "advertise_addr",
@@ -83,7 +84,7 @@ class TestCharm(unittest.TestCase):
     @patch.object(subprocess, "check_output")
     @patch.object(os, "makedirs")
     # For config_change
-    @patch.object(charm.MinioCharm, "_check_if_ready_to_start")
+    @patch.object(charm.MinioCharm, "_check_if_need_restart")
     @patch.object(charm.MinioCharm, "generate_certificates")
     @patch.object(charm.MinioCharm, "generate_service_file_minio")
     @patch.object(charm.MinioCharm, "generate_env_file_minio")
@@ -105,7 +106,9 @@ class TestCharm(unittest.TestCase):
                                       mock_user_add,
                                       mock_ip_get_hostname,
                                       mock_advertise_addr,
-                                      mock_apt_update):
+                                      mock_apt_update,
+                                      mock_open_port,
+                                      mock_close_port):
         mock_ip_get_hostname.return_value = "minio-0.test"
         mock_check_restart.return_value = False
         mock_certs.return_value = True
@@ -118,7 +121,6 @@ class TestCharm(unittest.TestCase):
             "min-units": 1
         })
         self.harness.begin_with_initial_hooks()
-        minio = self.harness.charm
         mock_perms.assert_called_once()
         # call_args_list is composed of:
         # [0] wget command
@@ -128,6 +130,8 @@ class TestCharm(unittest.TestCase):
             mock_check_output.call_args_list[0].args[0],
             ['wget', 'test', '-O', '/tmp/minio.deb'])
 
+    @patch.object(charm, "open_port")
+    @patch.object(charm, "close_port")
     @patch.object(disk_map, "create_dir")
     @patch.object(obj_stor.ObjectStorageRelationProvider,
                   "advertise_addr",
@@ -138,7 +142,7 @@ class TestCharm(unittest.TestCase):
     @patch.object(subprocess, "check_output")
     @patch.object(os, "makedirs")
     # For config_change
-    @patch.object(charm.MinioCharm, "_check_if_ready_to_start")
+    @patch.object(charm.MinioCharm, "_check_if_need_restart")
     @patch.object(charm.MinioCharm, "generate_certificates")
     @patch.object(charm.MinioCharm, "generate_env_file_minio")
     @patch.object(charm.MinioCharm, "_cert_relation_set")
@@ -158,13 +162,14 @@ class TestCharm(unittest.TestCase):
                                           mock_user_add,
                                           mock_ip_get_hostname,
                                           mock_advertise_addr,
-                                          mock_create_dir):
+                                          mock_create_dir,
+                                          mock_open_port,
+                                          mock_close_port):
         mock_ip_get_hostname.return_value = "minio-0.test"
         mock_check_restart.return_value = False
         self.harness = Harness(charm.MinioCharm)
-        for i in range(0, 2):
-            self.harness.add_storage("data", "/dev/data{}".format(i))
-        cluster_id = self.harness.add_relation("cluster", "minio")
+        self.harness.add_storage("data", 2)
+        self.harness.add_relation("cluster", "minio")
         self.harness.update_config({
             "min-units": 4,
             "min-disks": 8
@@ -177,6 +182,8 @@ class TestCharm(unittest.TestCase):
         self.assertEqual(
             True, isinstance(minio.model.unit.status, BlockedStatus))
 
+    @patch.object(charm, "open_port")
+    @patch.object(charm, "close_port")
     @patch.object(disk_map, "create_dir")
     @patch.object(obj_stor.ObjectStorageRelationProvider,
                   "advertise_addr",
@@ -187,7 +194,7 @@ class TestCharm(unittest.TestCase):
     @patch.object(subprocess, "check_output")
     @patch.object(os, "makedirs")
     # For config_change
-    @patch.object(charm.MinioCharm, "_check_if_ready_to_start")
+    @patch.object(charm.MinioCharm, "_check_if_need_restart")
     @patch.object(charm.MinioCharm, "generate_certificates")
     @patch.object(charm.MinioCharm, "generate_env_file_minio")
     @patch.object(charm.MinioCharm, "_cert_relation_set")
@@ -207,12 +214,13 @@ class TestCharm(unittest.TestCase):
                                          mock_user_add,
                                          mock_ip_get_hostname,
                                          mock_advertise_addr,
-                                         mock_create_dir):
+                                         mock_create_dir,
+                                         mock_open_port,
+                                         mock_close_port):
         mock_ip_get_hostname.return_value = "minio-0.test"
         mock_check_restart.return_value = False
         self.harness = Harness(charm.MinioCharm)
-        for i in range(0, 2):
-            self.harness.add_storage("data", "/dev/data{}".format(i))
+        self.harness.add_storage("data", 2)
         cluster_id = self.harness.add_relation("cluster", "minio")
         self.harness.update_config({
             "min-units": 4,
@@ -248,6 +256,8 @@ class TestCharm(unittest.TestCase):
             context={'svc': {'user': 'minio', 'group': 'minio'}}
         )
 
+    @patch.object(charm, "open_port")
+    @patch.object(charm, "close_port")
     @patch.object(disk_map, "create_dir")
     @patch.object(obj_stor.ObjectStorageRelationProvider,
                   "advertise_addr",
@@ -258,7 +268,7 @@ class TestCharm(unittest.TestCase):
     @patch.object(subprocess, "check_output")
     @patch.object(os, "makedirs")
     # For config_change
-    @patch.object(charm.MinioCharm, "_check_if_ready_to_start")
+    @patch.object(charm.MinioCharm, "_check_if_need_restart")
     @patch.object(charm.MinioCharm, "generate_certificates")
     @patch.object(charm.MinioCharm, "generate_service_file_minio")
     @patch.object(charm.MinioCharm, "_cert_relation_set")
@@ -282,13 +292,17 @@ class TestCharm(unittest.TestCase):
                                          mock_user_add,
                                          mock_ip_get_hostname,
                                          mock_advertise_addr,
-                                         mock_create_dir):
+                                         mock_create_dir,
+                                         mock_open_port,
+                                         mock_close_port):
         mock_gen_random.return_value = "testtest"
         mock_ip_get_hostname.return_value = "minio-0.test"
         mock_check_restart.return_value = False
         self.harness = Harness(charm.MinioCharm)
-        for i in range(0, 2):
-            self.harness.add_storage("data", "/dev/data{}".format(i))
+        self.harness.add_storage("data", 2)
+        self.addCleanup(self.harness.cleanup)
+        # Start the unit's relations and leader settings
+        self.harness.set_leader(True)
         cluster_id = self.harness.add_relation("cluster", "minio")
         self.harness.update_config({
             "min-units": 4,
@@ -314,28 +328,30 @@ class TestCharm(unittest.TestCase):
             "used_folders": "/data1,/data2"
         })
         self.harness.set_leader(True)
-        # Reorder the cluster units set so we ensure test consistency
-        # across several runs
-        self.harness = self._order_units_data('cluster', self.harness)
         self.harness.begin_with_initial_hooks()
-        self.addCleanup(self.harness.cleanup)
-        minio = self.harness.charm
+        # Reorder the cluster units set so we ensure test consistency
+        # across several runs and rerun the generate env method
+        self.harness = self._order_units_data('cluster', self.harness)
+        self.harness.charm.generate_env_file_minio()
         mock_render.assert_called_with(
-            source='minio_env', target='/etc/minio',
+            source='minio_env', target='/etc/minio/minio',
             owner='minio', group='minio', perms=384,
             context={
                 'env': {
-                    'MINIO_VOLUMES': [
-                        'http://minio-1.test:9000/data1',
-                        'http://minio-1.test:9000/data2',
-                        'http://minio-2.test:9000/data1',
-                        'http://minio-2.test:9000/data2',
-                        'http://minio-3.test:9000/data1',
-                        'http://minio-3.test:9000/data2'],
-                    'MINIO_OPTS': '--address :9000',
+                    'MINIO_VOLUMES': "\"http://minio-1.test:9000/data1 "
+                                     "http://minio-1.test:9000/data2 "
+                                     "http://minio-2.test:9000/data1 "
+                                     "http://minio-2.test:9000/data2 "
+                                     "http://minio-3.test:9000/data1 "
+                                     "http://minio-3.test:9000/data2 "
+                                     "http://minio-0.test:9000/data1 "
+                                     "http://minio-0.test:9000/data2\"",
+                    'MINIO_OPTS': '"--address :9000"',
                     'MINIO_ROOT_USER': 'minioadmin',
                     'MINIO_ROOT_PASSWORD': 'testtest'}})
 
+    @patch.object(charm, "open_port")
+    @patch.object(charm, "close_port")
     @patch.object(disk_map, "create_dir")
     @patch.object(obj_stor.ObjectStorageRelationProvider,
                   "advertise_addr",
@@ -346,7 +362,7 @@ class TestCharm(unittest.TestCase):
     @patch.object(subprocess, "check_output")
     @patch.object(os, "makedirs")
     # For config_change
-    @patch.object(charm.MinioCharm, "_check_if_ready_to_start")
+    @patch.object(charm.MinioCharm, "_check_if_need_restart")
     @patch.object(charm.MinioCharm, "generate_env_file_minio")
     @patch.object(charm.MinioCharm, "generate_service_file_minio")
     # Overall patchs
@@ -379,7 +395,11 @@ class TestCharm(unittest.TestCase):
                                          mock_user_add,
                                          mock_ip_get_hostname,
                                          mock_advertise_addr,
-                                         mock_create_dir):
+                                         mock_create_dir,
+                                         mock_open_port,
+                                         mock_close_port):
+        CERT = "-----BEGIN CERTIFICATE-----\n" + \
+               "certificate\n-----END CERTIFICATE-----\n"
         mock_binding_addr.return_value = "127.0.0.1"
         mock_advertise_addr.return_value = "127.0.0.1"
         mock_gen_random.return_value = "testtest"
@@ -387,8 +407,7 @@ class TestCharm(unittest.TestCase):
         mock_socket_hostname.return_value = "minio-0.test"
         mock_check_restart.return_value = False
         self.harness = Harness(charm.MinioCharm)
-        for i in range(0, 2):
-            self.harness.add_storage("data", "/dev/data{}".format(i))
+        self.harness.add_storage("data", 2)
         cluster_id = self.harness.add_relation("cluster", "minio")
         self.harness.update_config({
             "min-units": 4,
@@ -417,7 +436,7 @@ class TestCharm(unittest.TestCase):
         cert_id = self.harness.add_relation("certificates", "easyrsa")
         self.harness.add_relation_unit(cert_id, "easyrsa/0")
         self.harness.update_relation_data(cert_id, "easyrsa/0", {
-            "minio_0.server.cert": "-----BEGIN CERTIFICATE-----\ncertificate\n-----END CERTIFICATE-----\n",
+            "minio_0.server.cert": CERT,
             "minio_0.server.key": "key"
         })
         self.harness.begin_with_initial_hooks()
@@ -425,6 +444,6 @@ class TestCharm(unittest.TestCase):
         minio = self.harness.charm
         self.assertEqual(
             minio.get_ssl_cert(),
-            "-----BEGIN CERTIFICATE-----\ncertificate\n-----END CERTIFICATE-----\n")
+            CERT)
         self.assertEqual(
             minio.get_ssl_key(), "key")

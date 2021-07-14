@@ -42,6 +42,24 @@ class MinioClusterManager(RelationManagerBase):
         self._storage_name = storage_name
         self._used_folders = []
 
+    def set_sans(self, s):
+        """Sets the sans to be shared across all units.
+        Args:
+            s: list of sans (strings) to be passed to ther units
+        """
+        if not self.relation:
+            return
+        self.send("sans", ",".join(s))
+
+    def get_sans(self):
+        if not self.relation:
+            return []
+        result = []
+        for u in self.relation.units:
+            result.extend(
+                self.relation.data[u].get("sans", "").split(","))
+        return result
+
     @property
     def min_units(self):
         return self._min_units
@@ -51,8 +69,12 @@ class MinioClusterManager(RelationManagerBase):
         return self._min_disks
 
     @property
-    def url(self, u):
+    def url(self):
         return self.relation.data[self._unit]["url"]
+
+    @property
+    def used_folders(self):
+        return self._used_folders
 
     @min_units.setter
     def min_units(self, m):
@@ -67,25 +89,28 @@ class MinioClusterManager(RelationManagerBase):
         self._url = u
         self.send("url", self._url)
 
+    @used_folders.setter
+    def used_folders(self, f):
+        self._used_folders = f
+        self.send("used_folders", ",".join(self._used_folders))
+
     def get_root_pwd(self):
-        if self.relation:
+        if not self.relation:
             return ""
-        return self.relation.data[self._charm.app]["root_pwd"]
+        # .get considers the case which cluster is not yet formed
+        # return an empty value in this case.
+        return self.relation.data[self._charm.app].get("root_pwd", "")
 
     def set_root_pwd(self, pwd):
         if self._charm.unit.is_leader():
             self.send_app("root_pwd", pwd)
 
-    def used_folders(self, f):
-        self._used_folders = f
-        self.send("used_folders", ",".join(self._used_folders))
-
     def is_ready(self):
-        if len(self.relation.units) < self._min_units:
+        if len(self.relation.units) + 1 < self._min_units:
             return False
         num_disks = len(self._charm.model.storages[self._storage_name])
         for u in self.relation.units:
-            num_disks += int(self.relation.data[u]["num_disks"])
+            num_disks += int(self.relation.data[u].get("num_disks", 0))
         if num_disks < self._min_disks:
             return False
         if num_disks % 4 > 0:
@@ -97,7 +122,8 @@ class MinioClusterManager(RelationManagerBase):
             return
         result = {}
         for u in self.relation.units:
-            if self.relation.data[u].get("url", None):
+            if self.relation.data[u].get("url", None) and \
+               self.relation.data[u].get("used_folders", None):
                 result[self.relation.data[u]["url"]] = \
                     self.relation.data[u]["used_folders"].split(",")
         return result

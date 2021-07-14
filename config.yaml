@@ -15,19 +15,26 @@ options:
       Creates a group for the minio user
   min-units:
     type: int
-    default: 3
+    default: 4
     description: |
       Minimum amount of nodes to allow bootstrapping
   min-disks:
     type: int
-    default: 4
+    default: 2
     description: |
       Minimum amount of disks available to allow bootstrapping for the cluster.
   package:
-    default: 'https://dl.min.io/server/minio/release/linux-amd64/minio_20210617001046.0.0_amd64.deb'
+    default: 'https://dl.min.io/server/minio/release/linux-amd64/minio_20210712024453.0.0_amd64.deb'
     type: string
     description: |
-      Link to the minio package for Ubuntu.
+      Link to the minio server package for Ubuntu.
+      Also upgrade the mcli-package in this case.
+  mcli-package:
+    default: 'https://dl.min.io/client/mc/release/linux-amd64/mcli_20210613174822.0.0_amd64.deb'
+    type: string
+    description: |
+      Link to the minio client package for Ubuntu.
+      Also upgrade the mcli-package in this case.
   proxy-connect-timeout:
     default: 300
     type: int
@@ -98,3 +105,8 @@ options:
     type: int
     description: |
       Prometheus port to be used for the scrape
+  minio_env_extra_opts:
+    default: ""
+    type: string
+    description: |
+      Key: value yaml-formatted list of extra options for minio_env
