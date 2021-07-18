@@ -279,6 +279,8 @@ class MinioCharm(CharmBase):
             self._stored.ctx = event.ctx
             # Toggle need_restart as we just did it.
             self._stored.need_restart = False
+            self.model.unit.status = \
+                ActiveStatus("service running")
         else:
             # defer the RestartEvent as it is still waiting for the
             # lock to be released.
@@ -647,7 +649,22 @@ class MinioCharm(CharmBase):
         for x in self.disks.used_folders():
             vol.append(
                 "{}{}".format(self.cluster.url, x))
-        env["MINIO_VOLUMES"] = "\"{}\"".format(" ".join(vol))
+        # This is mandatory because Minio chooses the node to bootstrap
+        # the cluster based on who is the first unit in the config.
+        # For example, if cluster has following devices:
+        # <IP1>/data1, <IP2>/data2, <IP3>/data3
+        # Then the node that holds IP1 must have as very first config
+        # "<IP1>/data1" so cmd/endpoint.go's FirstLocal will return as
+        # local disk.
+        # Also, none of the other units must have their own <IP>/<vol>
+        # as the very first entry in the list, otherwise it will mean
+        # the cluster has two options to bootstrap.
+        # For that reason, the cluster leader must set the volume config
+        if self.unit.is_leader():
+            # Relation list may change but not the actual nodes
+            vol.sort()
+            self.cluster.minio_volumes = "\"{}\"".format(" ".join(vol))
+        env["MINIO_VOLUMES"] = self.cluster.minio_volumes
         env["MINIO_OPTS"] = "\"--address :{}\"".format(
             self.config["minio-service-port"])
         env["MINIO_ROOT_USER"] = self.config["minio_root_user"]

@@ -338,14 +338,14 @@ class TestCharm(unittest.TestCase):
             owner='minio', group='minio', perms=384,
             context={
                 'env': {
-                    'MINIO_VOLUMES': "\"http://minio-1.test:9000/data1 "
+                    'MINIO_VOLUMES': "\"http://minio-0.test:9000/data1 "
+                                     "http://minio-0.test:9000/data2 "
+                                     "http://minio-1.test:9000/data1 "
                                      "http://minio-1.test:9000/data2 "
                                      "http://minio-2.test:9000/data1 "
                                      "http://minio-2.test:9000/data2 "
                                      "http://minio-3.test:9000/data1 "
-                                     "http://minio-3.test:9000/data2 "
-                                     "http://minio-0.test:9000/data1 "
-                                     "http://minio-0.test:9000/data2\"",
+                                     "http://minio-3.test:9000/data2\"",
                     'MINIO_OPTS': '"--address :9000"',
                     'MINIO_ROOT_USER': 'minioadmin',
                     'MINIO_ROOT_PASSWORD': 'testtest'}})

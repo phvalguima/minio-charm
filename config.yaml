@@ -24,7 +24,7 @@ options:
     description: |
       Minimum amount of disks available to allow bootstrapping for the cluster.
   package:
-    default: 'https://dl.min.io/server/minio/release/linux-amd64/minio_20210712024453.0.0_amd64.deb'
+    default: 'https://dl.min.io/server/minio/release/linux-amd64/minio_20210715222734.0.0_amd64.deb'
     type: string
     description: |
       Link to the minio server package for Ubuntu.
@@ -109,4 +109,16 @@ options:
     default: ""
     type: string
     description: |
-      Key: value yaml-formatted list of extra options for minio_env
+      key-value yaml-formatted list of extra options for minio_env
+      Example:
+      minio:
+        charm: cs:minio
+        ...
+        options:
+          minio_env_extra_opts: |
+            test: 1
+            THIS_IS_THE_EXAMPLE: 2
+      OR
+      via juju config as follows:
+      $ juju config minio minio_env_extra_opts="test: 1
+      THIS_IS_THE_EXAMPLE: 2"

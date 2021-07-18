@@ -61,6 +61,12 @@ class MinioClusterManager(RelationManagerBase):
         return result
 
     @property
+    def minio_volumes(self):
+        if not self.relation:
+            return ""
+        return self.relation.data[self._charm.app].get("minio_volumes", "")
+
+    @property
     def min_units(self):
         return self._min_units
 
@@ -75,6 +81,11 @@ class MinioClusterManager(RelationManagerBase):
     @property
     def used_folders(self):
         return self._used_folders
+
+    @minio_volumes.setter
+    def minio_volumes(self, v):
+        if self._charm.unit.is_leader():
+            self.send_app("minio_volumes", v)
 
     @min_units.setter
     def min_units(self, m):
