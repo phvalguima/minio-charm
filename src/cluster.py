@@ -82,6 +82,32 @@ class MinioClusterManager(RelationManagerBase):
     def used_folders(self):
         return self._used_folders
 
+    @property
+    def peers_gone(self):
+        if not self.relation:
+            # No relation detected, no need to worry about it for now
+            return 0
+        return int(self.relation.data[self._charm.app].get("peers_gone", 0))
+
+    @property
+    def ack_peer_restablished(self):
+        if not self.relation:
+            return
+        return self.relation.data[self._unit].get(
+            "ack_peer_restablished", False)
+
+    @ack_peer_restablished.setter
+    def ack_peer_restablished(self, ack):
+        if not self.relation:
+            return
+        self.send("ack_peer_restablished", ack)
+
+    @peers_gone.setter
+    def peers_gone(self, p):
+        if not self.relation:
+            return
+        self.send_app("peers_gone", p)
+
     @minio_volumes.setter
     def minio_volumes(self, v):
         if self._charm.unit.is_leader():
@@ -117,6 +143,8 @@ class MinioClusterManager(RelationManagerBase):
             self.send_app("root_pwd", pwd)
 
     def is_ready(self):
+        if not self.relation:
+            return False
         if len(self.relation.units) + 1 < self._min_units:
             return False
         num_disks = len(self._charm.model.storages[self._storage_name])

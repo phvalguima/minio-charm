@@ -1,14 +1,6 @@
-from wand.apps.relations.relation_manager_base import RelationManagerBase
-
-
-class BasePrometheusMonitor(RelationManagerBase):
-
-    def __init__(self, charm, relation_name):
-        super().__init__(charm, relation_name)
-
-    def request(self, job_name, ca_cert=None, job_data=None):
-        # Job name as field and value the json describing it
-        self.send(job_name, job_data)
+from wand.apps.relations.base_prometheus_monitoring import (
+    BasePrometheusMonitor
+)
 
 
 class PrometheusMonitorCluster(BasePrometheusMonitor):
@@ -18,24 +10,27 @@ class PrometheusMonitorCluster(BasePrometheusMonitor):
         """Request registers the Prometheus scrape job.
         port: to be used as part of the target
         """
+        name = "{}_cluster".format(self._charm.app.name)
         # advertise_addr given that minio endpoint uses advertise_addr
         # to find its hostname
-        data = {
-            'static_configs': [{
-                'targets': ["{}:{}".format(
-                    endpoint or self.advertise_addr, port)]
-            }],
-            'scheme': 'http',
-            'metrics_path': metrics_path + "cluster"
+        job = {
+            'job_name': name,
+            'job_data': {
+                'static_configs': [{
+                    'targets': ["{}:{}".format(
+                        endpoint or self.advertise_addr, port)]
+                }],
+                'scheme': 'http',
+                'metrics_path': metrics_path + "cluster"
+            }
         }
-        name = "{}_cluster".format(self._charm.app)
         if ca_cert:
-            data['tls_config'] = {'ca_file': '__ca_file__'}
-            data['scheme'] = 'https'
+            job['tls_config'] = {'ca_file': '__ca_file__'}
+            job['scheme'] = 'https'
             super().request(name, ca_cert=ca_cert,
-                            job_data=data)
+                            job_data=job)
             return
-        super().request(name, job_data=data)
+        super().request(name, job_data=job)
 
 
 class PrometheusMonitorNode(BasePrometheusMonitor):
@@ -47,15 +42,18 @@ class PrometheusMonitorNode(BasePrometheusMonitor):
         """
         # advertise_addr given that minio endpoint uses advertise_addr
         # to find its hostname
+        name = "{}_node".format(self._charm.unit.name.replace("/", "-"))
         data = {
-            'static_configs': [{
-                'targets': ["{}:{}".format(
-                    endpoint or self.advertise_addr, port)]
-            }],
-            'scheme': 'http',
-            'metrics_path': metrics_path + "node"
+            'job_name': name,
+            'job_data': {
+                'static_configs': [{
+                    'targets': ["{}:{}".format(
+                        endpoint or self.advertise_addr, port)]
+                }],
+                'scheme': 'http',
+                'metrics_path': metrics_path + "node"
+            }
         }
-        name = "{}_node".format(self._charm.unit.replace("/", "-"))
         if ca_cert:
             data['tls_config'] = {'ca_file': '__ca_file__'}
             data['scheme'] = 'https'

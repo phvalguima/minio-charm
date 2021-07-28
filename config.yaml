@@ -2,6 +2,15 @@
 # See LICENSE file for licensing details.
 
 options:
+  auto-heal:
+    type: boolean
+    default: False
+    description: |
+      If units are detected to be gone, run a recovery mechanism to bring
+      the cluster back to its original state.
+      Auto heal will only be triggered if the unit is removed from Juju.
+      That avoids the situation where power off/back on triggers an unneeded healing; which is expensive in terms of resources.
+      Further discussions on healing process: https://github.com/minio/minio/issues/5700
   user:
     type: string
     default: 'minio'
@@ -44,9 +53,9 @@ options:
     default: 9000
     type: int
     description: |
-      Port used by minio service.
+      Port used by minio unit.
   service-port:
-    default: 80
+    default: 9000
     type: int
     description: |
       Service port used by the service-url.
@@ -54,10 +63,17 @@ options:
     default: ''
     type: string
     description: |
-      URL used for the service. Must resolve to the service-vip.
+      Optional, URL used for the service. Must resolve to the service-vip.
   service-vip:
     default: ''
     type: string
+    description: |
+      Optional, VIP used for the service.
+  service-is-public:
+    default: False
+    type: boolean
+    description: |
+      In the case a Load Balancer is being requested, set if the VIP / URL should be public or not
   automatic-upgrade:
     default: False
     type: boolean
@@ -122,3 +138,8 @@ options:
       via juju config as follows:
       $ juju config minio minio_env_extra_opts="test: 1
       THIS_IS_THE_EXAMPLE: 2"
+  nagios_context:
+    default: "minio"
+    type: string
+    description: |
+      Set nagios context for the NRPE charm

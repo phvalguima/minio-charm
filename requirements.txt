@@ -6,6 +6,7 @@ python-hosts==1.0.1
 git+https://github.com/phvalguima/charms.wand#egg=wand
 git+https://github.com/juju/charm-helpers.git@87fc7ee5#egg=charmhelpers
 git+https://github.com/canonical/ops-lib-nrpe#egg=ops-lib-nrpe
+git+https://github.com/juju-solutions/loadbalancer-interface#egg=loadbalancer_interface
 # Use pystemd to inspect if a given service is marked as inactive or faild
 # charmhelpers is not able to give this detailed information since it uses
 # the return value of "sudo systemctl status" to probe if a service is

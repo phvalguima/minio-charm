@@ -29,6 +29,7 @@ TO_PATCH_FETCH = [
 
 TO_PATCH_HOST = [
     'service_running',
+    'service_resume',
     'service_restart',
 ]
 

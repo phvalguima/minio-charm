@@ -60,6 +60,7 @@ from wand.security.ssl import _break_crt_chain
 
 from charmhelpers.core.host import (
     service_running,
+    service_resume,
     service_restart
 )
 from charmhelpers.core.hookenv import (
@@ -77,6 +78,8 @@ from charms.minio.v1.object_storage import ObjectStorageRelationProvider
 
 from nrpe.client import NRPEClient
 from monitoring import PrometheusMonitorCluster, PrometheusMonitorNode
+from loadbalancer_interface import LBProvider
+
 
 DISK_LAYOUT = """- /data1:
   - fs-type: ext4
@@ -207,6 +210,13 @@ class MinioCharm(CharmBase):
         self.framework.observe(
             self.on.cluster_relation_changed,
             self._on_cluster_relation_changed)
+        # Treat the cases where units are gone
+        self.framework.observe(
+            self.on.cluster_relation_broken,
+            self._on_cluster_relation_gone)
+        self.framework.observe(
+            self.on.cluster_relation_departed,
+            self._on_cluster_relation_gone)
 
         self.framework.observe(
             self.on.certificates_relation_joined,
@@ -214,13 +224,6 @@ class MinioCharm(CharmBase):
         self.framework.observe(
             self.on.certificates_relation_changed,
             self._on_certificates_relation_changed)
-
-        self.framework.observe(
-            self.on.object_storage_relation_joined,
-            self._on_object_storage_relation_joined)
-        self.framework.observe(
-            self.on.object_storage_relation_changed,
-            self._on_object_storage_relation_changed)
 
         self.framework.observe(
             self.on.prometheus_manual_relation_joined,
@@ -231,6 +234,10 @@ class MinioCharm(CharmBase):
 
         self.framework.observe(self.on.restart_event,
                                self._on_restart_event)
+
+        self.lb_provider = LBProvider(self, "lb-provider")
+        self.framework.observe(self.lb_provider.on.available,
+                               self._on_lb_provider_available)
 
         self.nrpe = NRPEClient(self, 'nrpe-external-master')
         self.framework.observe(self.nrpe.on.nrpe_available, self.on_nrpe_available)
@@ -246,16 +253,31 @@ class MinioCharm(CharmBase):
         self._stored.set_default(need_restart=False)
         self.services = ["minio"]
         self._stored.set_default(minio_root_pwd=genRandomPassword())
-        self.prometheus = None
+        self.prometheus = \
+            PrometheusMonitorNode(self, 'prometheus-manual')
         # DiskMapHelper expects a map of folder names and equivalent
         # mounting options to be used for the disks mounted via juju
         # storage. Given we need some previsiblity on the naming of those
         # disks, the charm itself will set 32 different mount names.
+
+        # Implements disk-related logic
         self._stored.set_default(disks=DISK_LAYOUT)
         self.disks = DiskMapHelper(
             self, self._stored.disks, "data",
             self.config["user"], self.config["group"])
         self._stored.set_default(port=-1)
+
+    def _on_lb_provider_available(self, event):
+        if not (self.unit.is_leader() and self.lb_provider.is_available):
+            return
+        request = self.lb_provider.get_request("lb-consumer")
+        request.protocol = request.protocols.tcp
+        request.port_mapping = {
+            self.config["service-port"]: self.config["minio-service-port"]
+        }
+        request.ingress_address = self.config["service-vip"]
+        request.public = self.config["service-is-public"]
+        self.lb_provider.send_request(request)
 
     def _on_restart_event(self, event):
         if not self._stored.need_restart:
@@ -292,7 +314,7 @@ class MinioCharm(CharmBase):
 
         self.nrpe.add_check(command=[
             '/usr/lib/nagios/plugins/check_tcp',
-            '-H', self.minio.adverise_addr,
+            '-H', self.minio.advertise_addr,
             '-p', str(self.model.config['minio-service-port']),
         ], name=check_name)
 
@@ -303,7 +325,7 @@ class MinioCharm(CharmBase):
         if self.unit.is_leader():
             # The leader submit the cluster-wide entry for prometheus
             endpoint = self.minio.hostname or None
-            p = PrometheusMonitorCluster(self.charm, 'prometheus-manual')
+            p = PrometheusMonitorCluster(self, 'prometheus-manual')
             p.request(
                 self.config["prometheus_port"],
                 metrics_path=self.config["prometheus_metrics_path"],
@@ -312,52 +334,53 @@ class MinioCharm(CharmBase):
                 if len(self.get_ssl_cacert()) > 0 else None)
         # Every node should submit a "node" entry for prometheus
         endpoint = self.minio.hostname or None
-        self.prometheus = \
-            PrometheusMonitorNode(self.charm, 'prometheus-manual')
         self.prometheus.request(
             self.config["prometheus_port"],
             metrics_path=self.config["prometheus_metrics_path"],
             endpoint=endpoint,
             ca_cert=self.get_ssl_cacert()
             if len(self.get_ssl_cacert()) > 0 else None)
+        # We need to render the env for prometheus
+        self._on_config_changed(event)
 
     def _on_prometheus_relation_changed(self, event):
         return
 
-    def _on_object_storage_relation_joined(self, event):
-        # TODO: Implement this relation
-        return
-
-    def _on_object_storage_relation_changed(self, event):
-        # TODO: Implement this relation
-        return
-
     def _on_certificates_relation_joined(self, event):
-#        if not self._cert_relation_set(event, self.minio):
-#            return
         self._on_config_changed(event)
 
     def _on_certificates_relation_changed(self, event):
-#        if not self._cert_relation_set(event, self.minio):
-#            return
         self._on_config_changed(event)
 
     def on_update_status(self, event):
         """ This method will update the status of the charm according
-            to the app's status"""
+        to the app's status
+
+        1) Check if unit is not already blocked, if so keep the status
+        2) If not blocked, if there are peers that have been gone,
+           generate alert
+        3) Check self.services status: which are running
+        4) Inform which services are up and generate restart events for
+           those which aren't
+        """
+        if self.unit.is_leader():
+            # Now, we need to always handle the locks, even if acquire() was not
+            # called since _check_if_need_restart returned False.
+            # Therefore, we need to manually handle those locks.
+            # If _check_if_need_restart returns True, then the locks will be
+            # managed at the restart event and config-changed is closed with a
+            # return.
+            coordinator = OpsCoordinator()
+            coordinator.resume()
+            coordinator.release()
+
+        # 1) Check if unit is not already blocked, if so keep the status
         if isinstance(self.model.unit.status, MaintenanceStatus):
             # Log the fact the unit is already blocked and return
             logger.warn(
                 "update-status called but unit is in maintenance "
                 "status, with message {}, return".format(
                     self.model.unit.status.message))
-            return
-        svc_list = [s for s in self.services if not service_running(s)]
-        if len(svc_list) == 0:
-            self.model.unit.status = \
-                ActiveStatus("{} running".format(self.services))
-            # The status is not in Maintenance and we can see the service
-            # is up, therefore we can switch to Active.
             return
         if isinstance(self.model.unit.status, BlockedStatus):
             # Log the fact the unit is already blocked and return
@@ -366,6 +389,24 @@ class MinioCharm(CharmBase):
                 "status, with message {}, return".format(
                     self.model.unit.status.message))
             return
+        # 2) If not blocked, if there are peers that have been gone,
+        #    generate alert
+        if self.cluster.peers_gone > 0:
+            logger.warn("update-status called but there are peers that are"
+                        " gone. Blocking unit...")
+            self.model.unit.status = \
+                BlockedStatus("Missing {} peers, ")
+            return
+        # 3) Check self.services status: which are running
+        svc_list = [s for s in self.services if not service_running(s)]
+        if len(svc_list) == 0:
+            self.model.unit.status = \
+                ActiveStatus("{} running".format(self.services))
+            # The status is not in Maintenance and we can see the service
+            # is up, therefore we can switch to Active.
+            return
+        # 4) Inform which services are up and generate restart events for
+        #    those which aren't
         # There are some services that are offline. Request restart
         # for this sublist:
         logger.warn(
@@ -391,12 +432,40 @@ class MinioCharm(CharmBase):
             # the root password to its units
             self.cluster.set_root_pwd(
                 self._stored.minio_root_pwd)
-        self._on_cluster_relation_changed(event)
+        # Check if there are peers gone
+        # This is run here instead of cluster-joined hook because we need
+        # to be sure peers_gone has been checked before the leader received
+        # the -joined event to decrease peers_gone.
+        # Also check if this unit already sent an ack to the leader. If yes,
+        # then this logic is not necessary anymore
+        if self.cluster.peers_gone > 0 and \
+           not self.cluster.ack_peer_restablished:
+            # Yes, now, if auto-heal is set, run the process or log it
+            if self.config["auto-heal"]:
+                cmd = ["mc", "admin", "heal", "-r",
+                       self.minio.hostname + "/"]
+                logger.info("auto-heal procedure ran, output: {}".format(
+                    subprocess.check_output(cmd)))
+            else:
+                logger.warn("peers are gone but auto-heal disabled"
+                            " ignoring...")
+            self.cluster.ack_peer_restablished = True
 
     def _on_cluster_relation_changed(self, event):
-#        if not self._cert_relation_set(event):
-#            return
         self.cluster.relation_changed(event)
+        self._on_config_changed(event)
+
+        # The leader should account for peers that were gone
+        if not self.unit.is_leader():
+            return
+        if self.cluster.peers_gone < 0:
+            self.cluster.peers_gone += 1
+
+    def _on_cluster_relation_gone(self, event):
+        # Unit is gone, mark it so the next new unit can be used for healing
+        if self.unit.is_leader():
+            self.cluster.peers_gone -= 1
+        # Now, regenerate configs:
         self._on_config_changed(event)
 
     def _on_install(self, event):
@@ -424,6 +493,7 @@ class MinioCharm(CharmBase):
         # This is the very first hook, we do not need to wait,
         # for an action, just run the installation process.
         self._do_install_or_upgrade()
+        self._on_config_changed(event)
 
     def _on_upgrade_action(self, event):
         self._do_install_or_upgrade()
@@ -474,8 +544,11 @@ class MinioCharm(CharmBase):
         3) Initiate context
         4) Generate the environment file for Minio
         5) Restart strategy
+        5.1) Check if this is an InstallEvent call, if yes,
+             just restart the service
         6) Open ports
         """
+
         use_certificates = False
         # 1) Treat the case where we are in the middle of an upgrade
         if self._stored.package != self.config["package"]:
@@ -535,11 +608,14 @@ class MinioCharm(CharmBase):
         # 2.3.1) If min-units > 1: check if password available on cluster
         if not self.unit.is_leader():
             self._stored.minio_root_pwd = self.cluster.get_root_pwd()
+        # 3) and 4) Generate context and env file
         ctx = {}
         ctx["env_minio"] = self.generate_env_file_minio()
         ctx["minio_svc"] = self.generate_service_file_minio()
         if use_certificates:
             ctx["cert_data"] = self.generate_certificates()
+
+        # 5) Restart Strategy
 
         if self.unit.is_leader():
             # Now, we need to always handle the locks, even if acquire() was not
@@ -552,13 +628,16 @@ class MinioCharm(CharmBase):
             coordinator.resume()
             coordinator.release()
 
+        # 5.1) Check if called via InstallEvent
         # Check if the unit has never been restarted (running InstallEvent).
         # In these cases, there is no reason to
         # request for the a restart to the cluster, instead simply restart.
         # For the "failed" case, check if service-restart-failed is set
         # if so, restart it.
         if isinstance(event, InstallEvent):
-            service_restart(self.service)
+            for svc in self.services:
+                service_resume(svc)
+                service_restart(svc)
             self.model.unit.status = \
                 ActiveStatus("Service is running")
             return
@@ -671,7 +750,7 @@ class MinioCharm(CharmBase):
         env["MINIO_ROOT_PASSWORD"] = self.cluster.get_root_pwd()
         # If prometheus relation does not exist, so self.prometheus
         # will still have None value from __init__
-        if self.prometheus:
+        if self.prometheus.relations:
             env["MINIO_PROMETHEUS_AUTH_TYPE"] = "public"
         render(source="minio_env",
                target=CONFIG_ENV + "minio",
